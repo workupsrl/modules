@@ -6,6 +6,7 @@ use Illuminate\Foundation\AliasLoader;
 use Illuminate\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
+use Symfony\Component\Process\Process;
 
 class Module extends ServiceProvider
 {
@@ -158,7 +159,7 @@ class Module extends ServiceProvider
         $lowerName = $this->getLowerName();
 
         $langPath = base_path("resources/lang/{$lowerName}");
-        
+
         if (is_dir($langPath)) {
             $this->loadTranslationsFrom($langPath, $lowerName);
         }
@@ -349,7 +350,41 @@ class Module extends ServiceProvider
      */
     public function delete()
     {
-        return $this->json()->getFilesystem()->deleteDirectory($this->getPath(), true);
+        $this->app['events']->fire('module.removing', [$this]);
+
+        if(file_exists($this->getPath() . '/composer.json') && file_exists(base_path() . '/composer.lock')) {
+            $composerPackageName = with(new Json($this->getPath() . '/composer.json', $this->app['files']))->get('name');
+            $composerLockJson = new Json(base_path() . '/composer.lock', $this->app['files']);
+            $installedPackages = array_fetch($composerLockJson->get('packages'), 'name') + array_fetch($composerLockJson->get('packages-dev'), 'name');
+
+            if(is_null($composerPackageName) || !in_array($composerPackageName, $installedPackages)) {
+                if($this->json()->getFilesystem()->deleteDirectory($this->getPath(), true)) {
+                    $this->app['events']->fire('module.removed', [$this]);
+                    return true;
+                } else {
+                    return false;
+                }
+            }
+
+            $process = new Process(sprintf(
+                'cd %s && composer remove %s --update-with-dependencies && composer dumpautoload',
+                base_path(),
+                $composerPackageName
+            ));
+
+            $process->run();
+
+            if($process->isSuccessful()) {
+                $this->app['events']->fire('module.removed', [$this]);
+                return true;
+            }
+        } else {
+            if($this->json()->getFilesystem()->deleteDirectory($this->getPath(), true)) {
+                $this->app['events']->fire('module.removed', [$this]);
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
